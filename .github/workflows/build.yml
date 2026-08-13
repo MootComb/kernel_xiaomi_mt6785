@@ -17,7 +17,6 @@ jobs:
   Set-repos:
     name: "🐂 Parse repos.json"
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'Nova-Kernels' && github.repository == 'Nova-Kernels/priv_kernel_xiaomi_mt6785'
     outputs:
       repos: ${{ steps.generate-matrix.outputs.repos }}
       builddate: ${{ steps.generate-builddate.outputs.builddate }}
@@ -38,7 +37,6 @@ jobs:
   Build-Kernel:
     name: "🐎 Build kernel"
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'Nova-Kernels' && github.repository == 'Nova-Kernels/priv_kernel_xiaomi_mt6785'
     needs:
       - Set-repos
     strategy:
