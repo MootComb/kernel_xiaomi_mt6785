@@ -78,7 +78,8 @@ static unsigned int kp_mode = CONFIG_KP_DEFAULT_MODE;
 static struct kobject *kp_kobj;
 
 DEFINE_MUTEX(kp_set_mode_rb_lock);
-DEFINE_SPINLOCK(kp_set_mode_lock);
+/* Mutex: the notifier chain takes an rwsem and its listeners sleep. */
+DEFINE_MUTEX(kp_set_mode_lock);
 
 #ifdef CONFIG_KP_VERBOSE_DEBUG
 #define kp_dbg(fmt, ...) pr_info(fmt, ##__VA_ARGS__)
@@ -167,16 +168,16 @@ void kp_set_mode(unsigned int level)
 		return;
 	}
 
-	spin_lock(&kp_set_mode_lock);
+	mutex_lock(&kp_set_mode_lock);
 	ret = __kp_set_mode(level);
 	if (ret) {
 		kp_err("Invalid mode requested, skipping mode change.\n");
-		spin_unlock(&kp_set_mode_lock);
+		mutex_unlock(&kp_set_mode_lock);
 		return;
 	}
 
 	kp_trigger_mode_change_event();
-	spin_unlock(&kp_set_mode_lock);
+	mutex_unlock(&kp_set_mode_lock);
 }
 EXPORT_SYMBOL(kp_set_mode);
 
@@ -226,6 +227,18 @@ int kp_active_mode(void)
 	return kp_mode;
 }
 EXPORT_SYMBOL(kp_active_mode);
+
+/**
+ * kp_stored_mode - Get the configured profile mode (0-3)
+ *
+ * Unlike kp_active_mode(), ignores the screen-off and rollback overrides.
+ * Use this to gate or snapshot a mode change, not kp_active_mode().
+ */
+int kp_stored_mode(void)
+{
+	return kp_mode;
+}
+EXPORT_SYMBOL(kp_stored_mode);
 
 /**
  * kp_trigger_mode_change_event - Trigger a mode change event
@@ -420,7 +433,12 @@ static int __init kp_init(void)
 
 	return ret;
 }
+
+#ifdef MODULE
 module_init(kp_init);
+#else
+late_initcall(kp_init);
+#endif
 
 static void __exit kp_exit(void)
 {
