@@ -20,6 +20,8 @@ jobs:
     outputs:
       repos: ${{ steps.generate-matrix.outputs.repos }}
       builddate: ${{ steps.generate-builddate.outputs.builddate }}
+      tag_name: ${{ steps.generate-tag.outputs.tag_name }}
+      release_name: ${{ steps.generate-tag.outputs.release_name }}
     steps:
       - name: "😄 Checkout"
         uses: actions/checkout@v6
@@ -30,9 +32,24 @@ jobs:
           echo "repos<<EOF" >> $GITHUB_OUTPUT
           jq -s '[.[][]]' repos/repos*.json >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
+          
       - name: "⏰ Set builddate"
         id: generate-builddate
         run: echo "builddate=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+        
+      - name: "🏷️ Generate Tag Name"
+        id: generate-tag
+        run: |
+          # Get the latest commit hash (short)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date +'%Y%m%d')
+          
+          # Try to get version from kernel source or use date-based version
+          TAG_NAME="v${BUILD_DATE}-${SHORT_SHA}"
+          RELEASE_NAME="Kernel Build ${BUILD_DATE} (${SHORT_SHA})"
+          
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_name=${RELEASE_NAME}" >> $GITHUB_OUTPUT
 
   Build-Kernel:
     name: "🐎 Build kernel"
@@ -293,3 +310,89 @@ jobs:
         with:
           name: "${{ env.KERNEL_DEVICE }}-${{ env.KERNEL_NAME }}_${{ env.builddate }}${{ env.withKernelSU == 'true' && format('_KernelSU_{0}', steps.integrate-kernelsu.outputs.KERNELSU_VERSION) || '' }}"
           path: AnyKernel3/*
+
+      - name: "📦 Upload kernel image for release"
+        uses: actions/upload-artifact@v7
+        if: ${{ env.useAnykernel == 'true' && env.release == 'true' }}
+        with:
+          name: "kernel-artifacts-${{ matrix.repos.kernelSource.device }}"
+          path: ${{ env.WORKSPACE }}/*.zip
+          retention-days: 90
+
+  Create-Release:
+    name: "🚀 Create GitHub Release"
+    runs-on: ubuntu-latest
+    needs:
+      - Set-repos
+      - Build-Kernel
+    if: ${{ always() && contains(needs.*.result, 'success') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    steps:
+      - name: "📥 Download all kernel artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: kernel-artifacts-*
+          merge-multiple: true
+
+      - name: "📝 Generate release notes"
+        id: release-notes
+        run: |
+          echo "## Kernel Build Release" > release_notes.md
+          echo "" >> release_notes.md
+          echo "### Build Information" >> release_notes.md
+          echo "- Build Date: ${{ needs.Set-repos.outputs.builddate }}" >> release_notes.md
+          echo "- Triggered by: ${{ github.actor }}" >> release_notes.md
+          echo "- Commit: ${{ github.sha }}" >> release_notes.md
+          echo "- Repository: ${{ github.repository }}" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Download" >> release_notes.md
+          echo "Download the kernel ZIP files attached to this release." >> release_notes.md
+          echo "" >> release_notes.md
+          echo "### Included Kernels" >> release_notes.md
+          
+          if [ -d "./artifacts" ]; then
+            for file in ./artifacts/*.zip; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                echo "- \`$filename\`" >> release_notes.md
+              fi
+            done
+          else
+            echo "No kernel artifacts found." >> release_notes.md
+          fi
+          
+          echo "" >> release_notes.md
+          echo "---" >> release_notes.md
+          echo "Built with ❤️ using GitHub Actions"
+
+      - name: "🔍 Check if tag exists"
+        id: check-tag
+        run: |
+          TAG="${{ needs.Set-repos.outputs.tag_name }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "tag_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "tag_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: "🚀 Create/Update Release"
+        id: create-release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "${{ needs.Set-repos.outputs.release_name }}"
+          tag_name: "${{ needs.Set-repos.outputs.tag_name }}"
+          body_path: ./release_notes.md
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          files: |
+            ./artifacts/*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "✅ Release created successfully"
+        if: steps.create-release.outcome == 'success'
+        run: |
+          echo "🎉 Release created: ${{ needs.Set-repos.outputs.tag_name }}"
+          echo "🔗 URL: ${{ steps.create-release.outputs.url }}"
